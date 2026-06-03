@@ -309,9 +309,21 @@
     overTrigger = false; overCard = false; removeCard();
   });
 
-  // 滚动时虚拟列表会回收/移位触发项，浮窗位置随之失效，直接收起最干脆也最省性能。
-  // 用 passive 监听避免阻塞滚动；没浮窗时零成本。
-  document.addEventListener('scroll', function () { if (card) removeCard(); }, { passive: true, capture: true });
+  // 滚动时浮窗跟随触发项重新定位（rAF 节流，避免每个 scroll 事件都重排造成卡顿）。
+  // 触发项还在视口内 -> 跟着移动；已滚出视口/被回收 -> 收起。没浮窗时零成本。
+  var scrollRaf = false;
+  document.addEventListener('scroll', function () {
+    if (!card || scrollRaf) return;
+    scrollRaf = true;
+    requestAnimationFrame(function () {
+      scrollRaf = false;
+      if (!card) return;
+      var rt = rectOf(triggerElCur);
+      // 触发项消失或滚出视口（与视口无交集）-> 收起
+      if (!rt || rt.bottom <= 0 || rt.top >= window.innerHeight) { removeCard(); return; }
+      if (triggerElCur) position(card, triggerElCur);
+    });
+  }, { passive: true, capture: true });
 
   console.log('[opencode-hover] installed');
 })();
