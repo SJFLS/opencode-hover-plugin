@@ -6,6 +6,8 @@
 
 Hover over a session in the left sidebar → a popover lists **all the messages you sent** in that session → click one → it navigates to that session and scrolls to that exact message.
 
+![demo](./docs/demo.gif)
+
 The official app used to ship this (the `SessionHoverPreview` + `MessageNav` components). It was removed in PR #20708 ("better subagent experience", 2026-04-07) when the sidebar was refactored. This plugin re-implements it via **runtime injection** (Chrome DevTools Protocol), touching none of the app's files and keeping its signature intact.
 
 > macOS only. Verified on the official desktop app **1.15.x**.
