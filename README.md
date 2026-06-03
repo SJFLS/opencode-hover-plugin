@@ -10,7 +10,7 @@ Hover over a session in the left sidebar → a popover lists **all the messages 
 
 The official app used to ship this (the `SessionHoverPreview` + `MessageNav` components). It was removed in PR #20708 ("better subagent experience", 2026-04-07) when the sidebar was refactored. This plugin re-implements it via **runtime injection** (Chrome DevTools Protocol), touching none of the app's files and keeping its signature intact.
 
-> macOS only. Verified on the official desktop app **1.15.x**.
+> Verified on macOS + official desktop **1.15.x**. The core (injection, popover, theming, **cross-platform DB path detection**) is OS-agnostic; only the launcher script (`start-opencode-hover.command`) is macOS-specific. Windows/Linux users can reuse everything else by starting OpenCode with `--remote-debugging-port=9222` themselves and running `bun hover-helper.js` — see [Windows / Linux](#windows--linux).
 
 ---
 
@@ -106,11 +106,54 @@ Then hover a session in the left sidebar for ~0.5s — the popover appears.
 
 ---
 
+## Windows / Linux
+
+The core (`inject.js`, `hover-helper.js`) is OS-agnostic and the DB path is auto-detected, so only the launcher differs.
+
+### Windows
+
+A PowerShell launcher is included: **`start-opencode-hover.ps1`**. It does the same as the macOS one — stop any old helper, (re)start OpenCode with `--remote-debugging-port=9222`, wait for the port, then attach the helper.
+
+```powershell
+# install bun (once)
+powershell -c "irm bun.sh/install.ps1 | iex"
+
+# clone into the same path layout
+git clone https://github.com/SJFLS/opencode-hover-plugin.git "$HOME\.local\share\opencode\hover-plugin"
+
+# run
+powershell -ExecutionPolicy Bypass -File "$HOME\.local\share\opencode\hover-plugin\start-opencode-hover.ps1"
+```
+
+It auto-detects `OpenCode.exe` (Scoop `opencode-desktop`, or `%LOCALAPPDATA%\Programs\...`). If it can't find it, set the path explicitly:
+
+```powershell
+$env:OPENCODE_EXE = "C:\path\to\OpenCode.exe"
+```
+
+For a global hotkey, point AutoHotkey / PowerToys / a Start-menu shortcut at the same command (add `-WindowStyle Hidden` to keep it silent).
+
+> Why the DB still resolves correctly on Windows: OpenCode uses `xdg-basedir`, which on Windows falls back to `~/.local/share` (i.e. `C:\Users\<you>\.local\share\opencode\opencode.db`) — **not** `%APPDATA%`. The helper detects this automatically (override with `OPENCODE_DB`).
+
+### Linux
+
+The macOS launcher's logic is plain bash; only `open -a` / `osascript` are macOS-only. On Linux just start OpenCode with the flag and run the helper yourself:
+
+```bash
+opencode-desktop --remote-debugging-port=9222 &   # or your install's binary
+bun ~/.local/share/opencode/hover-plugin/hover-helper.js
+```
+
+The DB path (`$XDG_DATA_HOME/opencode` → `~/.local/share/opencode`) is detected automatically.
+
+---
+
 ## Files
 
 | File | Role | Required |
 |---|---|---|
-| `start-opencode-hover.command` | Launcher: stop old helper → start OpenCode with debug port → attach helper | ✅ |
+| `start-opencode-hover.command` | macOS launcher: stop old helper → start OpenCode with debug port → attach helper | macOS |
+| `start-opencode-hover.ps1` | Windows launcher (PowerShell), same logic as the macOS one | Windows |
 | `hover-helper.js` | CDP helper (bun): injects the script, reads `opencode.db`, feeds data back to the renderer, auto-stops on quit | ✅ |
 | `inject.js` | Front-end script injected into the renderer: hover detection, popover UI, theme adaptation, click-to-jump | ✅ |
 | `launch-hover.applescript` | Reference one-liner for hotkey tools | optional |
@@ -176,6 +219,15 @@ Edit, then restart the helper + reload the renderer to take effect (easiest: qui
 | Per-message truncation | `hover-helper.js`: `r.text.length > 200 ? ...slice(0,200)...` |
 | Port | launcher `PORT=9222`; helper defaults to 9222 (or env `OPENCODE_HOVER_PORT`) |
 | Quit tolerance | `hover-helper.js`: `++misses >= 3` |
+| Database path | auto-detected (see below); override with env `OPENCODE_DB` |
+
+### Database path detection
+
+`hover-helper.js` locates `opencode.db` the same way OpenCode itself does (via `xdg-basedir`), so it works cross-platform without hardcoded paths:
+
+1. If env **`OPENCODE_DB`** is set → use it (`:memory:`, an absolute path, or a filename resolved under the data dir).
+2. Otherwise the data dir is **`$XDG_DATA_HOME/opencode`**, falling back to **`~/.local/share/opencode`** (this is the same on macOS, Linux *and Windows* — `xdg-basedir` does **not** use `%APPDATA%`).
+3. Inside it, it picks `opencode.db`, or the most recently modified `opencode-<channel>.db` (dev/beta builds use a channel-suffixed file).
 
 ---
 

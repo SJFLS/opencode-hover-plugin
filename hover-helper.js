@@ -2,16 +2,51 @@
 // 通过共享 DOM 属性回填渲染进程（避开 Electron 多 world 的 window 隔离）。
 // 运行：bun hover-helper.js   （需要 OpenCode 以 --remote-debugging-port=9222 启动）
 import { Database } from "bun:sqlite";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { dirname, join, isAbsolute } from "node:path";
+import { homedir } from "node:os";
 
 const PORT = Number(process.env.OPENCODE_HOVER_PORT || 9222);
-const HOME = process.env.HOME;
-const DB_PATH = `${HOME}/.local/share/opencode/opencode.db`;
 const __dir = dirname(fileURLToPath(import.meta.url));
 const INJECT = readFileSync(join(__dir, "inject.js"), "utf8");
 
+// 跨平台定位 opencode.db。OpenCode 用 xdg-basedir：data 目录 = $XDG_DATA_HOME/opencode，
+// 未设则回退 ~/.local/share/opencode（macOS / Linux / Windows 一致，不用 %APPDATA%）。
+// db 文件名按安装渠道不同：正式版 opencode.db，其他渠道 opencode-<channel>.db；
+// 还可被 OPENCODE_DB 覆盖。这里优先级：OPENCODE_DB > 自动挑选存在且最新的 db 文件。
+function resolveDbPath() {
+  // 1) 显式覆盖
+  if (process.env.OPENCODE_DB) {
+    const v = process.env.OPENCODE_DB;
+    if (v === ":memory:") return v;
+    if (isAbsolute(v)) return v;
+    return join(dataDir(), v);
+  }
+  // 2) 在 data 目录里找存在的 db 文件
+  const dir = dataDir();
+  const exact = join(dir, "opencode.db");
+  if (existsSync(exact)) return exact;
+  // 渠道版：opencode-<channel>.db，挑最近修改的那个
+  try {
+    const cands = readdirSync(dir)
+      .filter((f) => /^opencode.*\.db$/.test(f))
+      .map((f) => join(dir, f))
+      .filter((p) => existsSync(p))
+      .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
+    if (cands.length) return cands[0];
+  } catch {}
+  return exact; // 都没有也返回默认路径，让 Database 抛清晰错误
+}
+
+function dataDir() {
+  const xdg = process.env.XDG_DATA_HOME;
+  const base = xdg && xdg.trim() ? xdg : join(homedir(), ".local", "share");
+  return join(base, "opencode");
+}
+
+const DB_PATH = resolveDbPath();
+console.log("[helper] db:", DB_PATH);
 const db = new Database(DB_PATH, { readonly: true });
 const stmt = db.query(`
   SELECT m.id AS id,
