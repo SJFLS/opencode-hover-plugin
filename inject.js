@@ -81,11 +81,36 @@
 
   var card = null, hideTimer = null, overTrigger = false, overCard = false, curSession = null;
   var showTimer = null, pendingSid = null;
+  var triggerElCur = null;            // 当前浮窗对应的触发会话项（用于坐标兜底命中）
+  var lastPt = { x: -1, y: -1 };      // 最近一次鼠标坐标
+  var HIDE_GAP = 8;                   // 触发项与卡片之间留的容差，避免缝隙处误隐藏
   var SHOW_DELAY = 500;
 
-  function removeCard() { if (card) { card.remove(); card = null; } curSession = null; }
+  function removeCard() {
+    if (card) { card.remove(); card = null; }
+    curSession = null; triggerElCur = null; overTrigger = false; overCard = false;
+  }
   function scheduleHide() { clearTimeout(hideTimer); hideTimer = setTimeout(function () { if (!overTrigger && !overCard) removeCard(); }, 180); }
   function cssEscape(s) { return (window.CSS && CSS.escape) ? CSS.escape(s) : String(s).replace(/["\\\]]/g, '\\$&'); }
+
+  // 坐标是否落在某元素矩形内（带容差）。元素已脱离文档则视为不命中。
+  function ptInEl(el, x, y, pad) {
+    if (!el || !el.isConnected) return false;
+    var r = el.getBoundingClientRect();
+    if (!r || (r.width === 0 && r.height === 0)) return false;
+    pad = pad || 0;
+    return x >= r.left - pad && x <= r.right + pad && y >= r.top - pad && y <= r.bottom + pad;
+  }
+
+  // 兜底：用最近鼠标坐标判断是否真的还在卡片/触发项上。
+  // 不在 -> 直接收起。这样即使 mouseout/mouseleave 事件丢失也能可靠隐藏。
+  function recheckPointer() {
+    if (!card) return;
+    var onCard = ptInEl(card, lastPt.x, lastPt.y, 0);
+    var onTrig = ptInEl(triggerElCur, lastPt.x, lastPt.y, HIDE_GAP);
+    overCard = onCard; overTrigger = onTrig;
+    if (!onCard && !onTrig) removeCard();
+  }
 
   function position(el, triggerEl) {
     var r = triggerEl.getBoundingClientRect();
@@ -125,6 +150,7 @@
     if (curSession === sessionId && card) return;
     removeCard();
     curSession = sessionId;
+    triggerElCur = triggerEl;
     card = document.createElement('div');
     card.className = 'ophv-card';
     card.innerHTML = '<div class="ophv-title">加载中…</div>';
@@ -208,6 +234,25 @@
     clearTimeout(showTimer); showTimer = null; pendingSid = null;  // 取消未触发的延迟显示
     scheduleHide();
   }, true);
+
+  // 坐标兜底：每次移动都更新坐标，并校验鼠标是否真的还在卡片/触发项上。
+  // 这能修复「mouseout/mouseleave 事件丢失导致浮窗不消失」的残留问题
+  // （快速移出窗口、列表重渲染换了 DOM、虚拟列表回收触发项等情况）。
+  document.addEventListener('mousemove', function (e) {
+    lastPt.x = e.clientX; lastPt.y = e.clientY;
+    if (card) recheckPointer();
+  }, true);
+
+  // 鼠标移出整个文档（窗口外）/ 窗口失焦：直接收起。
+  document.addEventListener('mouseleave', function () {
+    overTrigger = false; overCard = false; scheduleHide();
+  }, true);
+  window.addEventListener('blur', function () {
+    overTrigger = false; overCard = false; removeCard();
+  });
+
+  // 滚动时触发项可能被虚拟列表回收/移位，重新用坐标校验一次。
+  document.addEventListener('scroll', function () { if (card) recheckPointer(); }, true);
 
   console.log('[opencode-hover] installed');
 })();
