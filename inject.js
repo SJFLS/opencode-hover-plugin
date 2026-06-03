@@ -90,26 +90,53 @@
     if (card) { card.remove(); card = null; }
     curSession = null; triggerElCur = null; overTrigger = false; overCard = false;
   }
-  function scheduleHide() { clearTimeout(hideTimer); hideTimer = setTimeout(function () { if (!overTrigger && !overCard) removeCard(); }, 180); }
+  function scheduleHide() {
+    clearTimeout(hideTimer);
+    hideTimer = setTimeout(function () {
+      // 收起前再用坐标复检一次：不在卡片/触发项/过渡区内才真正移除。
+      if (overTrigger || overCard) return;
+      if (inBridgeZone(lastPt.x, lastPt.y)) return;
+      removeCard();
+    }, 220);
+  }
   function cssEscape(s) { return (window.CSS && CSS.escape) ? CSS.escape(s) : String(s).replace(/["\\\]]/g, '\\$&'); }
 
-  // 坐标是否落在某元素矩形内（带容差）。元素已脱离文档则视为不命中。
-  function ptInEl(el, x, y, pad) {
-    if (!el || !el.isConnected) return false;
+  function rectOf(el) {
+    if (!el || !el.isConnected) return null;
     var r = el.getBoundingClientRect();
-    if (!r || (r.width === 0 && r.height === 0)) return false;
+    if (!r || (r.width === 0 && r.height === 0)) return null;
+    return r;
+  }
+  function ptInRect(r, x, y, pad) {
+    if (!r) return false;
     pad = pad || 0;
     return x >= r.left - pad && x <= r.right + pad && y >= r.top - pad && y <= r.bottom + pad;
   }
+  function ptInEl(el, x, y, pad) { return ptInRect(rectOf(el), x, y, pad); }
 
-  // 兜底：用最近鼠标坐标判断是否真的还在卡片/触发项上。
-  // 不在 -> 直接收起。这样即使 mouseout/mouseleave 事件丢失也能可靠隐藏。
+  // 触发项与卡片的「联合包围盒」（含容差）。鼠标从触发项斜向移到卡片时，
+  // 中途会经过两矩形之间的对角空隙——只要还在这个包围盒内就不收起，避免误隐藏。
+  function inBridgeZone(x, y) {
+    var rt = rectOf(triggerElCur), rc = rectOf(card);
+    if (!rt && !rc) return false;
+    var box = rt && rc ? {
+      left: Math.min(rt.left, rc.left), right: Math.max(rt.right, rc.right),
+      top: Math.min(rt.top, rc.top), bottom: Math.max(rt.bottom, rc.bottom),
+    } : (rt || rc);
+    return ptInRect(box, x, y, HIDE_GAP);
+  }
+
+  // 兜底：用最近鼠标坐标判断是否还在「卡片 / 触发项 / 二者之间的过渡区」内。
+  // 在过渡区内 -> 保留（不立即隐藏）；完全离开 -> 走宽限延迟隐藏。
+  // 这样既修了「事件丢失导致不消失」，又不会在斜穿空隙时误收起。
   function recheckPointer() {
     if (!card) return;
     var onCard = ptInEl(card, lastPt.x, lastPt.y, 0);
     var onTrig = ptInEl(triggerElCur, lastPt.x, lastPt.y, HIDE_GAP);
     overCard = onCard; overTrigger = onTrig;
-    if (!onCard && !onTrig) removeCard();
+    if (onCard || onTrig) { clearTimeout(hideTimer); return; }
+    if (inBridgeZone(lastPt.x, lastPt.y)) return;  // 在过渡区，保持现状（不收起也不强留计时）
+    scheduleHide();                                 // 真正离开，宽限后由 scheduleHide 收起
   }
 
   function position(el, triggerEl) {
