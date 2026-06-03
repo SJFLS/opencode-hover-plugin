@@ -24,6 +24,22 @@ The official app used to ship this (the `SessionHoverPreview` + `MessageNav` com
 
 ---
 
+## Why it's useful
+
+OpenCode sessions get long. Once a conversation has dozens of turns, finding "that thing I asked earlier" means endless scrolling, and the left sidebar only shows session titles — it tells you nothing about what's *inside* each one. This plugin closes that gap:
+
+- **Find your past questions instantly.** Instead of scrolling a long thread to locate a message you wrote, hover the session and read every message you sent, in order, in one popover.
+- **One-click navigation to the exact message.** Click an item and it jumps to that message and scrolls it into view — even if it lives deep inside the virtualized message list (it reuses the app's own reveal + hash-scroll, so off-screen items are rendered for you).
+- **Peek without switching.** Hover any session in the sidebar to recall "what was this one about?" without leaving your current session or losing your place.
+- **Faster context recall across sessions.** Titles are vague; your own messages are the real index. The popover turns each session into a clickable table of contents of *your* prompts.
+- **A power move for long-session workflows.** Great for big refactors, multi-step debugging, or research threads where you revisit earlier instructions often.
+- **It's the only way to get this back.** The feature shipped officially and was removed; this re-adds it **without patching the app, breaking its signature, or needing a rebuild**, and it keeps working across most official updates.
+- **Zero ongoing cost.** No background bloat, no npm tree, no account. The helper only runs while OpenCode is open and exits automatically when you quit.
+
+In short: it turns the sidebar from a list of opaque titles into a **searchable, jump-anywhere map of everything you've asked** — saving the scrolling and the "where did I say that?" hunt.
+
+---
+
 ## Requirements
 
 | Requirement | Why | Get it |
