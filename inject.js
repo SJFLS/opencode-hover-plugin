@@ -98,10 +98,11 @@
     hideTimer = setTimeout(function () {
       // 收起前再用坐标复检一次：还在卡片/触发项上则不收。
       if (!card) return;
-      if (ptInEl(card, lastPt.x, lastPt.y, 0)) return;
+      var rc = rectOf(card);
+      if (ptInRect(rc, lastPt.x, lastPt.y, 0)) return;
       if (ptInEl(triggerElCur, lastPt.x, lastPt.y, HIDE_GAP)) return;
       // 三角区保护只在没进过卡片时有效（从触发项移向卡片途中）。
-      if (!everOnCard && inSafeTriangle(lastPt.x, lastPt.y)) return;
+      if (!everOnCard && inSafeTriangle(lastPt.x, lastPt.y, rc)) return;
       removeCard();
     }, 220);
   }
@@ -132,8 +133,8 @@
     var pos = (d1 > 0) || (d2 > 0) || (d3 > 0);
     return !(neg && pos);
   }
-  function inSafeTriangle(x, y) {
-    var rc = rectOf(card);
+  // rc 由调用方传入已算好的卡片矩形，避免一次复检里重复 getBoundingClientRect。
+  function inSafeTriangle(x, y, rc) {
     if (!rc || prevPt.x < 0) return false;
     // 卡片在鼠标右侧 -> 用卡片左边为底；在左侧 -> 用右边。再外扩一点容差。
     var onRight = rc.left >= prevPt.x;
@@ -142,19 +143,18 @@
     return inTriangle(x, y, prevPt.x, prevPt.y, edgeX, topY, edgeX, botY);
   }
 
-  // 兜底：用最近鼠标坐标判断是否还在「卡片 / 触发项 / 二者之间的过渡区」内。
-  // 在过渡区内 -> 保留（不立即隐藏）；完全离开 -> 走宽限延迟隐藏。
-  // 这样既修了「事件丢失导致不消失」，又不会在斜穿空隙时误收起。
+  // 兜底：判断鼠标是否还在「卡片 / 触发项 / 朝卡片移动的三角区」内。
+  // 性能：一次复检里 getBoundingClientRect 只取一次（卡片、触发项各一次），复用给三角判断。
   function recheckPointer() {
     if (!card) return;
-    var onCard = ptInEl(card, lastPt.x, lastPt.y, 0);
-    var onTrig = ptInEl(triggerElCur, lastPt.x, lastPt.y, HIDE_GAP);
+    var rc = rectOf(card), rt = rectOf(triggerElCur);
+    var onCard = ptInRect(rc, lastPt.x, lastPt.y, 0);
+    var onTrig = ptInRect(rt, lastPt.x, lastPt.y, HIDE_GAP);
     overCard = onCard; overTrigger = onTrig;
     if (onCard) everOnCard = true;                  // 记录鼠标进入过卡片
     if (onCard || onTrig) { clearTimeout(hideTimer); return; }
-    // 三角安全区只在「还没进过卡片」时生效（用于从触发项移向卡片的途中）。
-    // 一旦进过卡片，从卡片内部移出就直接走隐藏，不再受三角区保护——避免移出宽浮窗时不消失。
-    if (!everOnCard && inSafeTriangle(lastPt.x, lastPt.y)) { clearTimeout(hideTimer); return; }
+    // 三角安全区只在「还没进过卡片」时生效（从触发项移向卡片途中）。
+    if (!everOnCard && inSafeTriangle(lastPt.x, lastPt.y, rc)) { clearTimeout(hideTimer); return; }
     scheduleHide();                                 // 离开，宽限后由 scheduleHide 收起
   }
 
@@ -286,25 +286,32 @@
     scheduleHide();
   }, true);
 
-  // 坐标兜底：每次移动都更新坐标，并校验鼠标是否真的还在卡片/触发项上。
-  // 这能修复「mouseout/mouseleave 事件丢失导致浮窗不消失」的残留问题
-  // （快速移出窗口、列表重渲染换了 DOM、虚拟列表回收触发项等情况）。
+  // 坐标兜底：更新坐标并校验鼠标是否还在卡片/触发项上。
+  // 性能：用 rAF 节流，一帧最多复检一次，避免高频 mousemove 反复 getBoundingClientRect 触发重排。
+  // 没有浮窗时几乎零成本（只更新两个坐标变量后立即返回）。
+  var rafPending = false;
+  function scheduleRecheck() {
+    if (rafPending || !card) return;
+    rafPending = true;
+    requestAnimationFrame(function () { rafPending = false; if (card) recheckPointer(); });
+  }
   document.addEventListener('mousemove', function (e) {
     prevPt.x = lastPt.x; prevPt.y = lastPt.y;   // 保留上一帧位置作为三角顶点
     lastPt.x = e.clientX; lastPt.y = e.clientY;
-    if (card) recheckPointer();
-  }, true);
+    if (card) scheduleRecheck();
+  }, { passive: true });
 
   // 鼠标移出整个文档（窗口外）/ 窗口失焦：直接收起。
   document.addEventListener('mouseleave', function () {
     overTrigger = false; overCard = false; scheduleHide();
-  }, true);
+  }, { passive: true });
   window.addEventListener('blur', function () {
     overTrigger = false; overCard = false; removeCard();
   });
 
-  // 滚动时触发项可能被虚拟列表回收/移位，重新用坐标校验一次。
-  document.addEventListener('scroll', function () { if (card) recheckPointer(); }, true);
+  // 滚动时虚拟列表会回收/移位触发项，浮窗位置随之失效，直接收起最干脆也最省性能。
+  // 用 passive 监听避免阻塞滚动；没浮窗时零成本。
+  document.addEventListener('scroll', function () { if (card) removeCard(); }, { passive: true, capture: true });
 
   console.log('[opencode-hover] installed');
 })();
