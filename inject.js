@@ -82,6 +82,7 @@
   var card = null, hideTimer = null, overTrigger = false, overCard = false, curSession = null;
   var showTimer = null, pendingSid = null;
   var triggerElCur = null;            // 当前浮窗对应的触发会话项（用于坐标兜底命中）
+  var everOnCard = false;             // 鼠标是否「进入过」卡片：进过之后移出不再受三角区保护
   var lastPt = { x: -1, y: -1 };      // 最近一次鼠标坐标
   var prevPt = { x: -1, y: -1 };      // 上一帧鼠标坐标（用于三角安全区的顶点）
   var HIDE_GAP = 8;                   // 触发项与卡片之间留的容差，避免缝隙处误隐藏
@@ -90,14 +91,17 @@
 
   function removeCard() {
     if (card) { card.remove(); card = null; }
-    curSession = null; triggerElCur = null; overTrigger = false; overCard = false;
+    curSession = null; triggerElCur = null; overTrigger = false; overCard = false; everOnCard = false;
   }
   function scheduleHide() {
     clearTimeout(hideTimer);
     hideTimer = setTimeout(function () {
-      // 收起前再用坐标复检一次：不在卡片/触发项/三角安全区内才真正移除。
-      if (overTrigger || overCard) return;
-      if (inSafeTriangle(lastPt.x, lastPt.y)) return;
+      // 收起前再用坐标复检一次：还在卡片/触发项上则不收。
+      if (!card) return;
+      if (ptInEl(card, lastPt.x, lastPt.y, 0)) return;
+      if (ptInEl(triggerElCur, lastPt.x, lastPt.y, HIDE_GAP)) return;
+      // 三角区保护只在没进过卡片时有效（从触发项移向卡片途中）。
+      if (!everOnCard && inSafeTriangle(lastPt.x, lastPt.y)) return;
       removeCard();
     }, 220);
   }
@@ -146,9 +150,12 @@
     var onCard = ptInEl(card, lastPt.x, lastPt.y, 0);
     var onTrig = ptInEl(triggerElCur, lastPt.x, lastPt.y, HIDE_GAP);
     overCard = onCard; overTrigger = onTrig;
+    if (onCard) everOnCard = true;                  // 记录鼠标进入过卡片
     if (onCard || onTrig) { clearTimeout(hideTimer); return; }
-    if (inSafeTriangle(lastPt.x, lastPt.y)) { clearTimeout(hideTimer); return; }  // 正朝卡片移动，保留
-    scheduleHide();                                 // 真正离开，宽限后由 scheduleHide 收起
+    // 三角安全区只在「还没进过卡片」时生效（用于从触发项移向卡片的途中）。
+    // 一旦进过卡片，从卡片内部移出就直接走隐藏，不再受三角区保护——避免移出宽浮窗时不消失。
+    if (!everOnCard && inSafeTriangle(lastPt.x, lastPt.y)) { clearTimeout(hideTimer); return; }
+    scheduleHide();                                 // 离开，宽限后由 scheduleHide 收起
   }
 
   function position(el, triggerEl) {
