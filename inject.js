@@ -83,8 +83,10 @@
   var showTimer = null, pendingSid = null;
   var triggerElCur = null;            // 当前浮窗对应的触发会话项（用于坐标兜底命中）
   var lastPt = { x: -1, y: -1 };      // 最近一次鼠标坐标
+  var prevPt = { x: -1, y: -1 };      // 上一帧鼠标坐标（用于三角安全区的顶点）
   var HIDE_GAP = 8;                   // 触发项与卡片之间留的容差，避免缝隙处误隐藏
   var SHOW_DELAY = 500;
+  var SWITCH_DELAY = 90;              // 浮窗已开着时，切到别的会话的延迟（短，跟手）
 
   function removeCard() {
     if (card) { card.remove(); card = null; }
@@ -93,9 +95,9 @@
   function scheduleHide() {
     clearTimeout(hideTimer);
     hideTimer = setTimeout(function () {
-      // 收起前再用坐标复检一次：不在卡片/触发项/过渡区内才真正移除。
+      // 收起前再用坐标复检一次：不在卡片/触发项/三角安全区内才真正移除。
       if (overTrigger || overCard) return;
-      if (inBridgeZone(lastPt.x, lastPt.y)) return;
+      if (inSafeTriangle(lastPt.x, lastPt.y)) return;
       removeCard();
     }, 220);
   }
@@ -114,16 +116,26 @@
   }
   function ptInEl(el, x, y, pad) { return ptInRect(rectOf(el), x, y, pad); }
 
-  // 触发项与卡片的「联合包围盒」（含容差）。鼠标从触发项斜向移到卡片时，
-  // 中途会经过两矩形之间的对角空隙——只要还在这个包围盒内就不收起，避免误隐藏。
-  function inBridgeZone(x, y) {
-    var rt = rectOf(triggerElCur), rc = rectOf(card);
-    if (!rt && !rc) return false;
-    var box = rt && rc ? {
-      left: Math.min(rt.left, rc.left), right: Math.max(rt.right, rc.right),
-      top: Math.min(rt.top, rc.top), bottom: Math.max(rt.bottom, rc.bottom),
-    } : (rt || rc);
-    return ptInRect(box, x, y, HIDE_GAP);
+  // 三角安全区（mouse-tracking triangle）：以「上一帧鼠标位置」为顶点，
+  // 以卡片靠触发项一侧的竖边为底，构成三角形。只有鼠标正朝卡片移动时才落在其中。
+  // 这样斜向移向卡片 -> 命中三角，保留浮窗；垂直往下移到别的会话项 -> 不在三角内，可正常切换。
+  function sign(ax, ay, bx, by, cx, cy) { return (ax - cx) * (by - cy) - (bx - cx) * (ay - cy); }
+  function inTriangle(px, py, ax, ay, bx, by, cx, cy) {
+    var d1 = sign(px, py, ax, ay, bx, by);
+    var d2 = sign(px, py, bx, by, cx, cy);
+    var d3 = sign(px, py, cx, cy, ax, ay);
+    var neg = (d1 < 0) || (d2 < 0) || (d3 < 0);
+    var pos = (d1 > 0) || (d2 > 0) || (d3 > 0);
+    return !(neg && pos);
+  }
+  function inSafeTriangle(x, y) {
+    var rc = rectOf(card);
+    if (!rc || prevPt.x < 0) return false;
+    // 卡片在鼠标右侧 -> 用卡片左边为底；在左侧 -> 用右边。再外扩一点容差。
+    var onRight = rc.left >= prevPt.x;
+    var edgeX = (onRight ? rc.left : rc.right) + (onRight ? HIDE_GAP : -HIDE_GAP);
+    var topY = rc.top - HIDE_GAP, botY = rc.bottom + HIDE_GAP;
+    return inTriangle(x, y, prevPt.x, prevPt.y, edgeX, topY, edgeX, botY);
   }
 
   // 兜底：用最近鼠标坐标判断是否还在「卡片 / 触发项 / 二者之间的过渡区」内。
@@ -135,7 +147,7 @@
     var onTrig = ptInEl(triggerElCur, lastPt.x, lastPt.y, HIDE_GAP);
     overCard = onCard; overTrigger = onTrig;
     if (onCard || onTrig) { clearTimeout(hideTimer); return; }
-    if (inBridgeZone(lastPt.x, lastPt.y)) return;  // 在过渡区，保持现状（不收起也不强留计时）
+    if (inSafeTriangle(lastPt.x, lastPt.y)) { clearTimeout(hideTimer); return; }  // 正朝卡片移动，保留
     scheduleHide();                                 // 真正离开，宽限后由 scheduleHide 收起
   }
 
@@ -239,13 +251,18 @@
     overTrigger = true; clearTimeout(hideTimer);
     if (curSession === sid && card) return;          // 已显示该会话
     if (pendingSid === sid && showTimer) return;     // 已排程
+
+    // 命中一个「不同的」会话项：会话项命中优先级最高，覆盖三角安全区，确保能切换。
+    // 浮窗已开着时用更短的 SWITCH_DELAY（跟手切换）；未开着时用 SHOW_DELAY（防误触）。
     clearTimeout(showTimer);
     pendingSid = sid;
     var triggerEl = t;
+    var delay = card ? SWITCH_DELAY : SHOW_DELAY;
     showTimer = setTimeout(function () {
       showTimer = null; pendingSid = null;
-      if (overTrigger) showCard(triggerEl, sid);
-    }, SHOW_DELAY);
+      // 触发前确认鼠标确实还在该会话项上（避免只是路过）
+      if (ptInEl(triggerEl, lastPt.x, lastPt.y, 0)) showCard(triggerEl, sid);
+    }, delay);
   }, true);
 
   document.addEventListener('mouseout', function (e) {
@@ -266,6 +283,7 @@
   // 这能修复「mouseout/mouseleave 事件丢失导致浮窗不消失」的残留问题
   // （快速移出窗口、列表重渲染换了 DOM、虚拟列表回收触发项等情况）。
   document.addEventListener('mousemove', function (e) {
+    prevPt.x = lastPt.x; prevPt.y = lastPt.y;   // 保留上一帧位置作为三角顶点
     lastPt.x = e.clientX; lastPt.y = e.clientY;
     if (card) recheckPointer();
   }, true);
