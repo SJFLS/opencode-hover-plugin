@@ -13,13 +13,16 @@
     try { return new TextDecoder().decode(Uint8Array.from(atob(b64), function (c) { return c.charCodeAt(0); })); }
     catch (e) { return '[]'; }
   }
-  function fetchMessages(sessionId) {
+  // isStale: 可选回调，返回 true 表示这次请求已过期（用户已切到别的会话），
+  // 用于提前停止轮询，避免快速划过多个会话时一堆 interval 并行空转。
+  function fetchMessages(sessionId, isStale) {
     return new Promise(function (resolve) {
       var reqId = String(++reqSeq) + '_' + Date.now();
       var attr = 'data-ophv-r' + reqId;
       var tries = 0;
       var iv = setInterval(function () {
         tries++;
+        if (isStale && isStale()) { clearInterval(iv); ROOT.removeAttribute(attr); resolve([]); return; }
         var v = ROOT.getAttribute(attr);
         if (v !== null) {
           clearInterval(iv);
@@ -67,10 +70,13 @@
     '--ophv-border:rgba(255,255,255,.14);--ophv-sep:rgba(255,255,255,.06);' +
     '--ophv-hover:rgba(255,255,255,.08);--ophv-shadow:0 12px 40px rgba(0,0,0,.6);' +
     'position:fixed;z-index:2147483647;max-width:520px;min-width:340px;max-height:70vh;overflow-y:auto;' +
-    'background:var(--ophv-bg);color:var(--ophv-fg);border:1px solid var(--ophv-border);border-radius:12px;padding:6px;' +
+    'background:var(--ophv-bg);color:var(--ophv-fg);border:1px solid var(--ophv-border);border-radius:12px;padding:0 6px 6px;' +
     'box-shadow:var(--ophv-shadow);font-size:13.5px;line-height:1.55;' +
     'font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;}' +
-    '.ophv-title{padding:7px 12px 9px;color:var(--ophv-muted);font-size:11.5px;position:sticky;top:0;background:var(--ophv-bg);}' +
+    // 标题：粘顶并把背景横向铺满整张卡片（用负 margin 抵消卡片左右 padding），
+    // 顶部多留 padding 顶到圆角处，彻底盖住滚动时从上方透出的列表内容。
+    '.ophv-title{margin:0 -6px;padding:13px 18px 9px;color:var(--ophv-muted);font-size:11.5px;' +
+    'position:sticky;top:0;z-index:1;background:var(--ophv-bg);border-radius:12px 12px 0 0;}' +
     '.ophv-item{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;' +
     'width:100%;text-align:left;padding:10px 12px;border:0;background:transparent;color:var(--ophv-fg);' +
     'cursor:pointer;white-space:normal;word-break:break-word;font:inherit;}' +
@@ -104,7 +110,7 @@
       // 三角区保护只在没进过卡片时有效（从触发项移向卡片途中）。
       if (!everOnCard && inSafeTriangle(lastPt.x, lastPt.y, rc)) return;
       removeCard();
-    }, 220);
+    }, 100);
   }
   function cssEscape(s) { return (window.CSS && CSS.escape) ? CSS.escape(s) : String(s).replace(/["\\\]]/g, '\\$&'); }
 
@@ -207,7 +213,8 @@
     card.addEventListener('mouseleave', function () { overCard = false; scheduleHide(); });
     document.body.appendChild(card);
     position(card, triggerEl);
-    fetchMessages(sessionId).then(function (msgs) {
+    // 传入过期判断：一旦切到别的会话或卡片被移除，立即停止该请求的轮询
+    fetchMessages(sessionId, function () { return curSession !== sessionId || !card; }).then(function (msgs) {
       if (curSession !== sessionId || !card) return;
       render(card, sessionId, msgs);
       position(card, triggerEl);
@@ -219,6 +226,7 @@
       document.querySelector('[data-message-id="' + cssEscape(messageId) + '"]');
   }
 
+  var jumpIv = null;   // 兜底高亮 interval：连续点多条时复用，避免并行堆积
   function jumpTo(sessionId, messageId) {
     // 不关闭浮窗：点击后跳转，浮窗保留（鼠标仍在其上时不会收起，可连续点多条）
     // 通过「会话路由 + #message-<id> hash」导航，触发官方 useSessionHashScroll 的 reveal+滚动
@@ -238,20 +246,22 @@
       try { location.hash = hash; } catch (e) {}
     }
     // 兜底高亮：官方 reveal 后目标元素会出现，找到就高亮（必要时再滚一次）
+    if (jumpIv) { clearInterval(jumpIv); jumpIv = null; }  // 先清掉上一次的兜底，避免并行堆积
     var tries = 0;
-    var iv = setInterval(function () {
+    jumpIv = setInterval(function () {
       tries++;
       var el = findMsgEl(messageId);
       if (el) {
-        clearInterval(iv);
+        clearInterval(jumpIv); jumpIv = null;
         el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      } else if (tries > 60) { clearInterval(iv); }
+      } else if (tries > 60) { clearInterval(jumpIv); jumpIv = null; }
     }, 100);
   }
 
   document.addEventListener('mouseover', function (e) {
-    if (!(e.target instanceof Element)) return;
-    var t = e.target.closest('[data-session-id]');
+    var tg = e.target;
+    if (!(tg instanceof Element)) return;
+    var t = tg.closest('[data-session-id]');
     if (!t) return;
     var sid = t.getAttribute('data-session-id');
     if (!sid) return;
@@ -270,9 +280,10 @@
       // 触发前确认鼠标确实还在该会话项上（避免只是路过）
       if (ptInEl(triggerEl, lastPt.x, lastPt.y, 0)) showCard(triggerEl, sid);
     }, delay);
-  }, true);
+  }, { capture: true, passive: true });
 
   document.addEventListener('mouseout', function (e) {
+    if (!card && !showTimer) return;   // 没浮窗也没在排程时，mouseout 无事可做，直接早退
     if (!(e.target instanceof Element)) return;
     var t = e.target.closest('[data-session-id]');
     if (!t) return;
@@ -284,7 +295,7 @@
     overTrigger = false;
     clearTimeout(showTimer); showTimer = null; pendingSid = null;  // 取消未触发的延迟显示
     scheduleHide();
-  }, true);
+  }, { capture: true, passive: true });
 
   // 坐标兜底：更新坐标并校验鼠标是否还在卡片/触发项上。
   // 性能：用 rAF 节流，一帧最多复检一次，避免高频 mousemove 反复 getBoundingClientRect 触发重排。

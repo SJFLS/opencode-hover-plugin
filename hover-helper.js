@@ -96,8 +96,11 @@ function attach(target) {
   }
 
   ws.addEventListener("open", () => {
+    // 只开 Runtime 事件（要 executionContext* 与 bindingCalled）。
+    // 不开 Page.enable：那会让 CDP 持续推送大量导航/帧/生命周期事件，
+    // helper 每条都要 JSON.parse，长期运行累积成可观的 CPU 占用。
+    // getFrameTree / addScriptToEvaluateOnNewDocument 是命令调用，不依赖 Page.enable。
     send("Runtime.enable");
-    send("Page.enable");
     send("Runtime.addBinding", { name: "__opencodeHoverBinding" });
     send("Page.addScriptToEvaluateOnNewDocument", { source: INJECT }); // 整页重载自动注入
     send("Page.getFrameTree");
